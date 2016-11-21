@@ -1,0 +1,6 @@
+numpy
+json
+requests
+urllib
+requests_oauthlib 
+bokeh 0.12.3
