@@ -1,7 +1,7 @@
 import numpy as np
 from time import time
 
-import json
+import re, json
 import requests
 import urllib.parse as urlparse
 from urllib.parse import urlencode
@@ -118,7 +118,31 @@ class spotifyuser():
 
 
 
-    def _get_tracks(self, playlist_tracks): 
+    def _parse_uri(self, uri):
+        '''Parse uri to return a dictionary of its contents.
+        Can only parse uri of tracks, artists, albums, user, playlists
+        '''
+
+        values = re.split(":", uri)
+        if values[0] != 'spotify':
+            print ("Can only parse uri starting with spotify. Check uri")
+            return None
+        else:
+            values = values[1:]
+            toret = {}
+            if len(values) == 2:
+                toret["type"] = values[0]
+                toret["id"] = values[1]
+                return toret
+            elif len(values) == 4:
+                toret["user"] = values[1]
+                toret["type"] = values[2]
+                toret["id"] = values[3]
+                return toret
+            else:
+                return "Uri type not understood"
+
+    def _read_tracks(self, playlist_tracks): 
         '''Use track object of spotify to get all tracks.
 
         Returns: pandas array of tracks
@@ -126,17 +150,21 @@ class spotifyuser():
         tracklist = playlist_tracks
         #The keys here need to correspond with trackitems in get playlist details.
         #TODO: Get rid of this hard-coding
-        tracks = pd.DataFrame(columns = ['added_at', 'name', 'id', 'album', 'artist', 'popularity'])
+        tracks = pd.DataFrame(columns = ['name', 'album', 'artist', 'popularity', 'id', 'added_at', 'uri'])
 
         while True:
             isnext = tracklist['next']
             for song in tracklist['items']:
                 track = song['track']
-                temp = {'added_at':song['added_at'], \
-                        'name':track['name'], 'id':track['id'], \
-                        'album':track['album']['name'], \
-                        'artist':self._get_artist(track), \
-                        'popularity':track['popularity']}
+                temp = {
+                    'name':track['name'], \
+                    'album':track['album']['name'], \
+                    'artist':self._get_artist(track), \
+                    'popularity':track['popularity'],\
+                    'id':track['id'], \
+                    'added_at':song['added_at'],\
+                    'uri':track['uri']
+                }
                 tracks = tracks.append(temp, ignore_index=True)
 
             if isnext:
@@ -147,14 +175,13 @@ class spotifyuser():
         return tracks
 
 
-    def get_playlist_details(self, name = None, ids = None):
-        '''Take playlist name or playlist id and return playlist details. 
+    def get_playlist_details(self, name = None, uri = None):
+        '''Take playlist name or playlist uri and return playlist details. 
 
         Parameters
         ---------
-        ids: The id of the playlist
-        name: Name of the playlist can be given if user.playlist object exists.
-        One of these 3 is required.
+        uri: String, uri of the playlists
+        name: Name of the playlist can be given if it is your playlist.
 
         
         Returns
@@ -163,25 +190,24 @@ class spotifyuser():
         '''
         self._refresh_token()
         #Get the name & id of the playlist
-        if name is None and ids is None:
-            print("Give either name or id")
-            return None
-        else:
-            if name is not None:
-                ids =  self._findxfory_playlist('id', "name", name)
-                href = self._findxfory_playlist('href', "name", name)
+        if uri is None:
+            if (self.playlists['name'] == name).sum():
+                uri = self._findxfory_playlist('uri', "name", name)
             else:
-                name = self._findxfory_playlist('name', "id", ids)
-                href = self._findxfory_playlist('href', "name", name)
-        
+                print ("The playlist name is not in your playlists. Give playlist uri instead")
+                return None
+        uridict = self._parse_uri(uri)
+        if uridict['type'] != 'playlist':
+            print ("This uri does not seem to be of a playlist. Give a playlist uri.")
+            return None
+
         #To create a URL to be queried.
         #TODO: To be able to take in field names as arguments
-        trackitems = "items(added_at,track(name,id,album.name,artists.name,popularity))"
+        trackitems = "items(added_at, track(name,id,uri,album.name,artists.name,popularity))"
         tracksfield = 'tracks(total,previous,offset,limit,next,%s)'%trackitems
         fields = ["id", "name", tracksfield, "description"]
 
-        #create_url = self.base_url + "users/%s/playlists/%s"%(self.me['id'], ids)
-        create_url = href
+        create_url = self.base_url + "users/%s/playlists/%s"%(uridict['user'], uridict['id'])
         for foo in range(len(fields)):
             if not foo:
                 create_url += "?fields="
@@ -193,22 +219,18 @@ class spotifyuser():
         response = self.oauth.get(create_url)
         playlist = json.loads(response.content.decode())
         #Convert tracks to pandas array
-        tracks = self._get_tracks(playlist['tracks'])
+        tracks = self._read_tracks(playlist['tracks'])
         playlist['tracks'] = tracks
         return playlist
+        
     
-    
-    
-    def get_features_playlist(self, playlist=None, ids= None, name = None):
-        '''Take playlist name or id or playlist object and extract song features 
+    def get_features_playlist(self, uri = None, name = None):
+        '''Take playlist uri (or name if its in your playlists) and extract song features 
 
         Parameters
         ---------
-        playlist: A spotify playlist object of the type user.playlist
-        ids: The id of the playlist
-        name: Name of the playlist can be given if user.playlist object exists.
-        One of these 3 is required.
-
+        uri: String, uri of the playlists
+        name: Name of the playlist can be given if it is your playlist.
         
         Returns
         -------
@@ -217,33 +239,25 @@ class spotifyuser():
 
         self._refresh_token()
         #Get the playlist
-        if name is None and ids is None and playlist is None:
-            print("Give either playlist name or playlist id or playlist object")
+        playlist = self.get_playlist_details(uri = uri, name = name)
+        if playlist is None:
+            print ('Features could not be found')
             return None
-        elif playlist is None:
-            if name is not None:
-                ids = self._findxfory_playlist('id', "name", name)
-                playlist = self.get_playlist_details(ids =ids)
-            elif id is not None:
-                name = self._findxfory_playlist('name', "id", ids)
-                playlist = self.get_playlist_details(ids =ids)
 
-        song_ids = list(playlist['tracks']['id'])
-        features = self.get_features_song(song_ids)
-        features["name"] = playlist['tracks']['name']
-        features["album"] = playlist['tracks']['album']
-        features["artist"] = playlist['tracks']['artist']
-        features["popularity"] = playlist['tracks']['popularity']
-        features["added_at"] = playlist['tracks']['added_at']
-        return features
-       #Query API. You can only query 100 songs at a time.
+        song_uri = list(playlist['tracks']['uri'])
+        features = self.get_features_song(song_uri)
+        for key in features.keys():
+            playlist['tracks'][key] = features[key]
+        return playlist['tracks']
 
-    def get_features_song(self, song_ids):
-        '''Take a song id or list of song ids and return song features 
+
+
+    def get_features_song(self, uri_list, get_song_names = False):
+        '''Take a list of uri (strings) and return song features 
 
         Parameters
         ---------
-        song_ids: string or list of strings which are the ids of songs.
+        song_ids: list of strings that are uri of type songs.
         
         Returns
         -------
@@ -251,38 +265,38 @@ class spotifyuser():
         '''
 
         self._refresh_token()
-        if type(song_ids) is list:
-            nsongs = len(song_ids)
-            features = []
-            startat = 0
-            while True:
-                if nsongs > 100:
-                    response = self.oauth.get(self.base_url+ "audio-features/?ids=%s"%(",".join(song_ids[:100])))
-                    features = features + json.loads(response.content.decode())['audio_features']
-                    song_ids = song_ids[100:]
-                    nsongs = len(song_ids)
-                else:
-                    response = self.oauth.get(self.base_url+ "audio-features/?ids=%s"%(",".join(song_ids[:]))) 
-                    features = features + json.loads(response.content.decode())['audio_features']
-                    break
+        song_ids = []
+        for uri in uri_list:
+            uridict = self._parse_uri(uri)
+            if uridict['type'] != 'track':
+                print ("Skipped uri that are not tracks")
+            else:
+                song_ids.append(uridict['id'])
+        nsongs = len(song_ids)
+        features = []
+        tracks = []
+        startat = 0
+        #Query API. You can only query 100 songs at a time.
+        while True:
+            if nsongs > 100:
+                response = self.oauth.get(self.base_url+ "audio-features/?ids=%s"%(",".join(song_ids[:100])))
+                features = features + json.loads(response.content.decode())['audio_features']
+                if get_song_names:
+                    response = self.oauth.get(self.base_url+ "tracks/?ids=%s"%(",".join(song_ids[:100])))
+                    tracks = tracks + json.loads(response.content.decode())['tracks']
+                song_ids = song_ids[100:]
+                nsongs = len(song_ids)
+            else:
+                response = self.oauth.get(self.base_url+ "audio-features/?ids=%s"%(",".join(song_ids[:]))) 
+                features = features + json.loads(response.content.decode())['audio_features']
+                if get_song_names:
+                    response = self.oauth.get(self.base_url+ "tracks/?ids=%s"%(",".join(song_ids[:])))
+                    tracks = tracks + json.loads(response.content.decode())['tracks']
+                break
 
-            features = pd.DataFrame(features)
-            return features
+        features =  pd.DataFrame(features)
+        if get_song_names:
+            tracks = pd.DataFrame(tracks)
+            features.insert(0, 'name', tracks['name'])
+        return features
 
-        elif type(song_ids) is str:
-            response = self.oauth.get(self.base_url+ "audio-features/%s"%song_ids)
-            features = json.loads(response.content.decode())['audio_features']
-            features = pd.DataFrame(features)
-
-            response = self.oauth.get(self.base_url+ "tracks/%s"%song_ids)
-            track = json.loads(response.content.decode())
-            features["name"] = track['name']
-            features["album"] = track['album']
-            features["artist"] = self.get_artist(track)
-            features["popularity"] = track['popularity']
-            return features
-
-        else:
-            print("Need either a string or list of strings of song ids")
-
-        

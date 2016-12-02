@@ -14,7 +14,7 @@ def plotting(feat1, feat2, playlists):
     --------
     feat1 = str, feature 1
     feat2 = str, feature 2
-    playlists = dictionary of playlist names and song feature object returned by spotifyuser.get_song_features()
+    playlists = dictionary of playlist names and song feature object returned by spotifyuser.get_features_playlist()
 
     Returns
     -------
