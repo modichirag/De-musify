@@ -50,7 +50,8 @@ def plotting(feat1, feat2, playlists):
     checkbox = CheckboxGroup(labels=labels, active=active,  width=100)
     args = dots
     args["checkbox"] = checkbox
-    checkbox.callback = CustomJS(args=args, lang="coffeescript", code=code)
+    #checkbox.callback = CustomJS(args=args, lang="coffeescript", code=code)
+    checkbox.callback = CustomJS(args=args,  code=code)
     
     layout = row(q, checkbox)
     show(layout)
